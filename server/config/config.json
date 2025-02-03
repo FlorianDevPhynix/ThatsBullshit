@@ -1,0 +1,20 @@
+{
+	"active": true,
+	"keepItemsFoundInRaid": false,
+	"keepItemsInSecureContainer": true,
+	"retainFoundInRaidStatus": true,
+	"saveVitality": false,
+	"keepQuestItems": false,
+	"killerMessages": true,
+	"victimMessages": true,
+
+	"profileSaving": {
+		"level": true,
+		"experience": true,
+		"skills": true,
+		"encyclopedia": true,
+		"questProgress": true,
+		"survivorClass": true,
+		"stats": true
+	}
+}
