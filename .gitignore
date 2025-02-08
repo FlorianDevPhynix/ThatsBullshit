@@ -1,5 +1,5 @@
 # generated SPT type definitions 
-/types
+/server/types
 # transpiled javascript
 src/*.js
 src/*.js.map
