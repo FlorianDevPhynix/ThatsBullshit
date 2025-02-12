@@ -29,7 +29,7 @@
 
 import os from 'node:os';
 import process from 'node:process';
-import { exec, spawn, spawnSync } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import util from 'node:util';
@@ -41,6 +41,7 @@ import sourcemaps from 'gulp-sourcemaps';
 import ts from 'gulp-typescript';
 import { transform } from './transform.js';
 import winston from 'winston';
+import WinstonStream from 'winston-stream';
 import minimist from 'minimist';
 import ignore from 'ignore';
 import archiver from 'archiver';
@@ -88,20 +89,17 @@ async function typeGen() {
 	await fs.emptyDir(typesPath);
 	logger.log('debug', 'Cleared types directory.');
 
-	// Run the type generation script.
-	const childArgs = [
-		'explore',
-		'spt-server',
-		'--',
-		'npm',
-		'run',
-		'gen:types',
-	];
+	let childArgs = ['explore', 'spt-server', '--', 'npm', 'run', 'gen:types'];
 	logger.log('debug', 'Executing: ' + childArgs.join(' '));
-	/* spawnSync('npm', childArgs, {
-			shell: true,
-			stdio: ['inherit', 'inherit', 'inherit'],
-		}); */
+	// Run the type generation script.
+	// npm explore spt-server -- npm run gen:types
+	await execShell('echo', ['test', 'test2']);
+	//await execShell('npm', childArgs);
+
+	// run item generation
+	// npm explore spt-server -- npm run gen:items
+	/* childArgs = ['explore', 'spt-server', '--', 'npm', 'run', 'gen:items'];
+	await execShell('npm', childArgs); */
 
 	// query spt-server package
 	let childResult;
@@ -162,7 +160,7 @@ async function typeGen() {
 	});
 	logger.log('info', 'Copied type files!');
 }
-typeGen.displayName = 'gen:types';
+typeGen.displayName = 'typegen';
 typeGen.description = 'Build the SPT types.';
 typeGen.flags = {
 	'--verbose, -v': 'Output debug information.',
@@ -376,6 +374,33 @@ release.flags = {
 gulp.task(release);
 
 /**
+ *
+ * @param {string} command
+ * @param {string[]?} args
+ * @param {import('node:child_process').SpawnOptionsWithoutStdio?} options
+ * @returns
+ */
+function execShell(command, args, options) {
+	return new Promise((resolve, reject) => {
+		const process = spawn(command, args, {
+			shell: true,
+			...options,
+		});
+		process.stdout.pipe(WinstonStream(logger, 'debug'));
+		process.stderr.pipe(WinstonStream(logger, 'error'));
+		process.on('error', (error) => logger.log('error', error));
+		process.on('close', (code) => {
+			logger.log('debug', 'child process exited with code ' + code);
+			if (code < 0) {
+				reject(code);
+			} else {
+				resolve(code);
+			}
+		});
+	});
+}
+
+/**
  * Retrieves the current working directory where the script is being executed. This directory is used as a reference
  * point for various file operations throughout the build process, ensuring that paths are resolved correctly regardless
  * of the location from which the script is invoked.
@@ -405,56 +430,6 @@ async function loadPackageJson(currentDir) {
 	);
 
 	return JSON.parse(packageJsonContent);
-}
-
-/**
- * Constructs a descriptive name for the mod package using details from the `package.json` file. The name is created by
- * concatenating the project name, version, and a timestamp, resulting in a unique and descriptive file name for each
- * build. This name is used as the base name for the temporary working directory and the final ZIP archive, helping to
- * identify different versions of the mod package easily.
- *
- * @param {Object} packageJson - A JSON object containing the contents of the `package.json` file.
- * @returns {string} A string representing the constructed project name.
- */
-function createProjectName(packageJson) {
-	// Remove any non-alphanumeric characters from the author and name.
-	const author = packageJson.author.replace(/\W/g, '');
-	const name = packageJson.name.replace(/\W/g, '');
-
-	// Ensure the name is lowercase, as per the package.json specification.
-	return `${author}-${name}`.toLowerCase();
-}
-
-/**
- * Loads the `.buildignore` file and sets up an ignore handler using the `ignore` module. The `.buildignore` file
- * contains a list of patterns describing files and directories that should be ignored during the build process. The
- * ignore handler created by this method is used to filter files and directories when copying them to the temporary
- * directory, ensuring that only necessary files are included in the final mod package.
- *
- * @param {string} currentDirectory - The absolute path of the current working directory.
- * @returns {Promise<ignore>} A promise that resolves to an ignore handler.
- */
-async function loadBuildIgnoreFile(currentDir) {
-	const buildIgnorePath = path.join(currentDir, '.buildignore');
-
-	try {
-		// Attempt to read the contents of the .buildignore file asynchronously.
-		const fileContent = await fs.promises.readFile(
-			buildIgnorePath,
-			'utf-8'
-		);
-
-		// Return a new ignore instance and add the rules from the .buildignore file (split by newlines).
-		return ignore().add(fileContent.split('\n'));
-	} catch (err) {
-		logger.log(
-			'warn',
-			'Failed to read .buildignore file. No files or directories will be ignored.'
-		);
-
-		// Return an empty ignore instance, ensuring the build process can continue.
-		return ignore();
-	}
 }
 
 /**
@@ -534,6 +509,56 @@ async function npmPack(outputFolder, packageFiles) {
 		})
 	);
 	logger.log('info', 'Copied ' + packageFiles.length + ' files.');
+}
+
+/**
+ * Loads the `.buildignore` file and sets up an ignore handler using the `ignore` module. The `.buildignore` file
+ * contains a list of patterns describing files and directories that should be ignored during the build process. The
+ * ignore handler created by this method is used to filter files and directories when copying them to the temporary
+ * directory, ensuring that only necessary files are included in the final mod package.
+ *
+ * @param {string} currentDirectory - The absolute path of the current working directory.
+ * @returns {Promise<ignore>} A promise that resolves to an ignore handler.
+ */
+async function loadBuildIgnoreFile(currentDir) {
+	const buildIgnorePath = path.join(currentDir, '.buildignore');
+
+	try {
+		// Attempt to read the contents of the .buildignore file asynchronously.
+		const fileContent = await fs.promises.readFile(
+			buildIgnorePath,
+			'utf-8'
+		);
+
+		// Return a new ignore instance and add the rules from the .buildignore file (split by newlines).
+		return ignore().add(fileContent.split('\n'));
+	} catch (err) {
+		logger.log(
+			'warn',
+			'Failed to read .buildignore file. No files or directories will be ignored.'
+		);
+
+		// Return an empty ignore instance, ensuring the build process can continue.
+		return ignore();
+	}
+}
+
+/**
+ * Constructs a descriptive name for the mod package using details from the `package.json` file. The name is created by
+ * concatenating the project name, version, and a timestamp, resulting in a unique and descriptive file name for each
+ * build. This name is used as the base name for the temporary working directory and the final ZIP archive, helping to
+ * identify different versions of the mod package easily.
+ *
+ * @param {Object} packageJson - A JSON object containing the contents of the `package.json` file.
+ * @returns {string} A string representing the constructed project name.
+ */
+function createProjectName(packageJson) {
+	// Remove any non-alphanumeric characters from the author and name.
+	const author = packageJson.author.replace(/\W/g, '');
+	const name = packageJson.name.replace(/\W/g, '');
+
+	// Ensure the name is lowercase, as per the package.json specification.
+	return `${author}-${name}`.toLowerCase();
 }
 
 /**
