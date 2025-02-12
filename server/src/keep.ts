@@ -16,7 +16,6 @@ import { MatchBotDetailsCacheService } from '@spt/services/MatchBotDetailsCacheS
 import { PmcChatResponseService } from '@spt/services/PmcChatResponseService';
 import { RandomUtil } from '@spt/utils/RandomUtil';
 import { TimeUtil } from '@spt/utils/TimeUtil';
-import { inject, injectable } from 'tsyringe';
 import { KConfig } from './KConfig';
 import { EquipmentSlots } from '@spt/models/enums/EquipmentSlots';
 import { IPmcData } from '@spt/models/eft/common/IPmcData';
@@ -31,14 +30,49 @@ import { RaidTimeAdjustmentService } from '@spt/services/RaidTimeAdjustmentServi
 import { ICloner } from '@spt/utils/cloners/ICloner';
 import { IEndLocalRaidRequestData } from '@spt/models/eft/match/IEndLocalRaidRequestData';
 import { ItemHelper } from '@spt/helpers/ItemHelper';
-import { InventoryHelper } from '@spt/helpers/InventoryHelper';
+import { InventoryHelper } from './InventoryHelper';
 import { IQuestStatus } from '@spt/models/eft/common/tables/IBotBase';
 import { IItem } from '@spt/models/eft/common/tables/IItem';
 import { Traders } from '@spt/models/enums/Traders';
+import { inject, injectable } from 'tsyringe';
+
+interface IExitData {
+	/** Player id */
+	sessionId: string;
+	/** Pmc profile */
+	preRaidData: IPmcData;
+	/** Scav profile */
+	scavProfile: IPmcData;
+}
+
+enum ItemLocation {
+	// item location has not been looked up before
+	Unknown,
+	// item is in Stash
+	Stash,
+	// item is in Equipment
+	Equipment,
+}
+
+interface ItemLookup {
+	item: IItem;
+	location: ItemLocation;
+}
+
+interface LookupConstants {
+	equipmentId: string;
+	questRaidItemsId: string;
+	stashId: string;
+	questStashItemsId: string;
+	hideoutStashs: Set<string>;
+}
 
 @injectable()
 export class KeepEquipment extends LocationLifecycleService {
 	private config: KConfig = require('../config/config');
+
+	/** Map of session id's to exit data */
+	private exits: Map<string, IExitData> = new Map();
 
 	constructor(
 		@inject('PrimaryLogger') protected logger: ILogger,
@@ -78,7 +112,7 @@ export class KeepEquipment extends LocationLifecycleService {
 		protected locationLootGenerator: LocationLootGenerator,
 		@inject('PrimaryCloner') protected cloner: ICloner,
 		@inject('ItemHelper') protected itemHelper: ItemHelper,
-		@inject('InventoryHelper') protected inventoryHelper: InventoryHelper
+		@inject('TBInventoryHelper') protected inventoryHelper: InventoryHelper
 	) {
 		super(
 			logger,
@@ -120,49 +154,45 @@ export class KeepEquipment extends LocationLifecycleService {
 		request: IEndLocalRaidRequestData,
 		locationName: string
 	): void {
-		if (!isDead) {
-			super.handlePostRaidPmc(
-				sessionId,
-				preRaidData,
-				scavProfile,
-				isDead,
-				isSurvived,
-				isTransfer,
-				request,
-				locationName
-			);
-			return;
-		}
+		const preRaidDataClone = this.cloner.clone(preRaidData);
+		// store raid exit data, for later use
+		this.exits.set(sessionId, {
+			sessionId,
+			preRaidData: preRaidDataClone,
+			scavProfile,
+		});
 
-		const postRaidProfile = request.results.profile;
-		const preRaidDataClone = this.cloner.clone(preRaidData.Quests);
-		const lostQuestItems =
-			this.profileHelper.getQuestItemsInProfile(postRaidProfile);
+		super.handlePostRaidPmc(
+			sessionId,
+			preRaidData,
+			scavProfile,
+			isDead,
+			isSurvived,
+			isTransfer,
+			request,
+			locationName
+		);
+	}
 
+	public resetAfterExit(sessionId: string) {
+		const { preRaidData, scavProfile } = this.exits.get(sessionId);
+
+		const postRaidProfile = this.profileHelper.getPmcProfile(sessionId);
 		this.updateProfile(
 			preRaidData,
 			postRaidProfile,
 			sessionId,
-			preRaidDataClone
+			preRaidData.Quests
 		);
 
+		const lostQuestItems =
+			this.profileHelper.getQuestItemsInProfile(postRaidProfile);
 		this.updateInventory(
 			preRaidData,
 			postRaidProfile,
 			sessionId,
 			lostQuestItems
 		);
-
-		const fenceId = Traders.FENCE;
-
-		const currentFenceStanding =
-			postRaidProfile.TradersInfo[fenceId].standing;
-		preRaidData.TradersInfo[fenceId].standing = Math.min(
-			Math.max(currentFenceStanding, -7),
-			15
-		);
-
-		scavProfile.TradersInfo[fenceId] = preRaidData.TradersInfo[fenceId];
 
 		this.mergePmcAndScavEncyclopedias(preRaidData, scavProfile);
 
@@ -174,36 +204,186 @@ export class KeepEquipment extends LocationLifecycleService {
 				true
 			);
 		}
+	}
 
-		if (this.config.killerMessages) {
-			this.pmcChatResponseService.sendKillerResponse(
-				sessionId,
-				preRaidData,
-				postRaidProfile.Stats.Eft.Aggressor
+	/**
+	 * recursive lookup of item and it'S parents
+	 * @param itemId
+	 * @param itemMap
+	 * @param constants
+	 * @returns
+	 */
+	private lookupItem(
+		itemId: string,
+		itemMap: Map<string, ItemLookup>,
+		constants: LookupConstants
+	) {
+		const lookupResult = itemMap.get(itemId);
+		if (!lookupResult) {
+			this.logger.error(
+				'Item lookup failed unexpectedly: ' + JSON.stringify(itemId)
 			);
+			return ItemLocation.Unknown;
 		}
 
-		this.matchBotDetailsCacheService.clearCache();
+		if (lookupResult.location !== ItemLocation.Unknown) {
+			// location already known, lookup unnecessary
+			return lookupResult.location;
+		}
 
-		if (this.config.victimMessages) {
-			const victims = postRaidProfile.Stats.Eft.Victims.filter((victim) =>
-				['pmcbear', 'pmcusec'].includes(victim.Role.toLowerCase())
+		// check item
+		if (!lookupResult.item.parentId) {
+			// item has no parent, impossible?
+			this.logger.warning(
+				'Item has no parent: ' + JSON.stringify(lookupResult)
 			);
-			if (victims?.length > 0) {
-				this.pmcChatResponseService.sendVictimResponse(
-					sessionId,
-					victims,
-					preRaidData
+			return ItemLocation.Unknown;
+		}
+		if (
+			lookupResult.item.slotId === EquipmentSlots.POCKETS ||
+			lookupResult.item.parentId === constants.equipmentId ||
+			lookupResult.item.parentId === constants.questRaidItemsId
+		) {
+			// equipment or pocket item, no parent lookup
+			lookupResult.location = ItemLocation.Equipment;
+			return ItemLocation.Equipment;
+		}
+		if (
+			lookupResult.item.parentId === constants.stashId ||
+			lookupResult.item.parentId === constants.questStashItemsId ||
+			constants.hideoutStashs.has(lookupResult.item.parentId)
+		) {
+			//  stash, quest stash or hideout stash item, no parent lookup
+			lookupResult.location = ItemLocation.Stash;
+			return ItemLocation.Stash;
+		}
+
+		// lookup it's parents
+		const parentLocation = this.lookupItem(
+			lookupResult.item.parentId,
+			itemMap,
+			constants
+		);
+		lookupResult.location = parentLocation;
+		return parentLocation;
+	}
+
+	public test(sessionId: string) {
+		const profile = this.profileHelper.getPmcProfile(sessionId);
+
+		this.logger.info('Items: ' + profile.Inventory.items.length);
+		console.time('equipment filter');
+		// stash containers in hideout
+		/* const hideoutStashs = new Set(
+			Object.entries(profile.Inventory.hideoutAreaStashes).map(
+				(entry) => entry[1]
+			)
+		);
+		this.logger.info(
+			'Hideout Stashs (' +
+				hideoutStashs.size +
+				'): ' +
+				hideoutStashs.values()
+		); */
+		const equipmentItems = this.inventoryHelper.getEquipmentItems(
+			profile.Inventory
+		);
+		console.timeEnd('equipment filter');
+
+		this.logger.info('Equipment items: ' + equipmentItems.length);
+		this.logger.info('------------------------');
+		for (const item of equipmentItems) {
+			this.logger.info(this.itemHelper.getItemName(item._tpl));
+		}
+		this.logger.info('------------------------');
+
+		//this.logger.info(JSON.stringify(items));
+		const backpack = profile.Inventory.items.find(
+			(value) => value.slotId === EquipmentSlots.BACKPACK
+		);
+		this.logger.info(JSON.stringify(backpack));
+		this.logger.info(this.itemHelper.getItemName(backpack._tpl));
+
+		const backpackItems = profile.Inventory.items.filter(
+			(item) => item.parentId === backpack._id
+		);
+		backpackItems.push(backpack);
+		this.logger.info('Container items (' + backpackItems.length + '): ');
+		/* for (const item of backpackItems) {
+			this.logger.info(JSON.stringify(item));
+		} */
+
+		const [width, height] = this.inventoryHelper.getItemSize(
+			backpack._tpl,
+			backpack._id,
+			backpackItems
+		);
+
+		class FixedSizeArray<T> {
+			private values: T[];
+
+			public get length(): number {
+				return this.size;
+			}
+
+			constructor(size: number);
+			constructor(size: number, defaultValue: T);
+			constructor(private size: number, defaultValue?: T) {
+				this.values = new Array(size);
+				if (defaultValue) {
+					for (let i = 0; i < size; i++) {
+						this.values[i] = defaultValue;
+					}
+				}
+			}
+
+			public value(index: number): T {
+				if (index < 0 || this.size <= index) {
+					throw new Error('index out of range');
+				}
+				return this.values[index];
+			}
+
+			public toString(): string {
+				return JSON.stringify(this.values);
+			}
+		}
+		this.logger.info('width: ' + width + '; height: ' + height);
+		const backpackMap = new FixedSizeArray(
+			width,
+			new FixedSizeArray<IItem | 0>(height, 0)
+		);
+		for (const item of backpackItems.filter(
+			(item) => item._id !== backpack._id
+		)) {
+			if (typeof item.location === 'number') {
+				//backpackMap.value(item.location);
+				this.logger.error('Did not expect number' + item.location);
+			} else {
+				const itemItems = profile.Inventory.items.filter(
+					(child) => child.parentId === item._id
+				);
+				itemItems.push(item);
+				const [itemWidth, itemHeight] =
+					this.inventoryHelper.getItemSize(
+						item._tpl,
+						item._id,
+						itemItems
+					);
+				this.logger.info(
+					`Item: x=${item.location.x} y=${item.location.y} r=${item.location.r} width=${itemWidth} height=${itemHeight}`
 				);
 			}
 		}
-
-		this.handleInsuredItemLostEvent(
-			sessionId,
-			preRaidData,
-			request,
-			locationName
+		/* const containerMap = this.inventoryHelper.getContainerMap(
+			width,
+			height,
+			backpackItems,
+			backpack._id
 		);
+		for (const element of containerMap) {
+			this.logger.info(JSON.stringify(element));
+		} */
 	}
 
 	private updateInventory(
@@ -214,6 +394,9 @@ export class KeepEquipment extends LocationLifecycleService {
 	) {
 		if (!this.config.keepQuestItems) {
 			for (const item of lostQuestItems) {
+				/* this.inventoryHelper.getContainerMap;
+				postRaidData.Inventory.questRaidItems;
+				this.inventoryHelper.placeItemInContainer(); */
 				this.inventoryHelper.removeItem(
 					postRaidData,
 					item._id,

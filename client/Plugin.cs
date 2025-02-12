@@ -27,6 +27,8 @@ namespace ThatsBullshit
             // enable patch
             new SessionExitScreenPatch().Enable();
             new SessionExitScreenAwakePatch().Enable();
-        }
+
+			Log.LogInfo(SPT.Common.Http.RequestHandler.PostJson("/thatsbullshit/test", "{}"));
+		}
     }
 }

@@ -96,6 +96,6 @@ public class SessionExitComponent : MonoBehaviour
 	internal static void OnButtonClick()
 	{
 		Plugin.Log.LogInfo("Button Clicked");
-		SPT.Common.Http.RequestHandler.PostJson("/yakyem/keep", "");
+		SPT.Common.Http.RequestHandler.PostJson("/thatsbullshit/keep", "{}");
 	}
 }
