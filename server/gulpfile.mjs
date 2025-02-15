@@ -36,10 +36,6 @@ import util from 'node:util';
 import fs from 'fs-extra';
 
 import gulp from 'gulp';
-import babel from 'gulp-babel';
-import sourcemaps from 'gulp-sourcemaps';
-import ts from 'gulp-typescript';
-import { transform } from './transform.js';
 import winston from 'winston';
 import WinstonStream from 'winston-stream';
 import minimist from 'minimist';
@@ -167,44 +163,6 @@ typeGen.flags = {
 };
 gulp.task(typeGen);
 
-async function distCleanup() {
-	// Get the current directory where the script is being executed
-	const currentDir = getCurrentDirectory();
-
-	// output directory
-	const distPath = path.join(currentDir, 'dist');
-
-	// clear dist directory
-	try {
-		await fs.emptyDir(distPath);
-	} catch (error) {
-		logger.log('error', error);
-	}
-	logger.log('debug', 'Cleared dist directory.');
-}
-
-function tsBuild() {
-	const project = initTS();
-
-	return gulp
-		.src('src/**.ts')
-		.pipe(sourcemaps.init())
-		.pipe(project())
-		.pipe(
-			babel({
-				presets: ['@babel/env'],
-			})
-		)
-		.pipe(
-			sourcemaps.write('.', {
-				// https://www.npmjs.com/package/gulp-typescript#source-maps
-				includeContent: false,
-				sourceRoot: '../../src',
-			})
-		)
-		.pipe(gulp.dest('dist/src'));
-}
-
 async function devDeploy() {
 	// Get the current directory where the script is being executed
 	const currentDir = getCurrentDirectory();
@@ -218,6 +176,29 @@ async function devDeploy() {
 	// packing the mod in dist folder
 	await npmPack(distPath, packageJson.files);
 
+	// process package.json, only keep important values
+	const packageKeys = new Set([
+		'name',
+		'shortName',
+		'author',
+		'contributors',
+		'license',
+		'version',
+		'sptVersion',
+		'loadBefore',
+		'loadAfter',
+		'incompatibilities',
+		'isBundleMod',
+		'main',
+	]);
+	const processedPackage = structuredClone(packageJson);
+	for (const key of Object.keys(processedPackage)) {
+		if (!packageKeys.has(key)) {
+			delete packageJson[key];
+		}
+	}
+	console.log(packageJson);
+
 	const sptUserModFolder = '../../../user/mods';
 	const deployFolder = path.join(sptUserModFolder, packageJson.shortName);
 	logger.log('debug', 'Deploying server mod to: ' + deployFolder);
@@ -228,7 +209,7 @@ async function devDeploy() {
 	logger.log('info', 'Deployed server mod');
 }
 
-export const dev = gulp.series(distCleanup, tsBuild, devDeploy);
+export const dev = gulp.series(devDeploy);
 dev.description = 'Build and deploy for development.';
 dev.flags = {
 	'--verbose, -v': 'Output more debug information.',
@@ -430,27 +411,6 @@ async function loadPackageJson(currentDir) {
 	);
 
 	return JSON.parse(packageJsonContent);
-}
-
-/**
- * Initialize the typescript project
- * @returns
- */
-function initTS() {
-	return ts.createProject('tsconfig.json', {
-		getCustomTransformers: () => ({
-			after: [
-				transform({
-					logger: (message) => logger.log('debug', message),
-					alias: {
-						// replace spt specific imports, with the correct path
-						'@spt': 'C:/snapshot/project/obj',
-						tsyringe: 'C:/snapshot/project/node_modules/tsyringe',
-					},
-				}),
-			],
-		}),
-	});
 }
 
 /**

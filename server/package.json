@@ -10,20 +10,29 @@
     "loadAfter": [],
     "incompatibilities": [],
     "isBundleMod": false,
+    "type": "module",
     "main": "src/mod.js",
+    "browserslist": [
+        "node 20.11"
+    ],
     "scripts": {
-        "dev": "gulp dev",
+        "dev": "npm run build && gulp dev",
         "release": "gulp release",
         "gen:types": "gulp typegen",
-        "build:transform": "tsc transform.ts"
+        "build:transform": "tsc transform.ts",
+        "build": "rollup -c",
+        "rolldown": "rolldown -c"
     },
     "files": [
         "README.md",
         "config"
     ],
     "devDependencies": {
-        "@babel/core": "^7.26.7",
-        "@babel/preset-env": "^7.26.7",
+        "@babel/preset-env": "^7.26.8",
+        "@rollup/plugin-babel": "^6.0.4",
+        "@rollup/plugin-commonjs": "^28.0.2",
+        "@rollup/plugin-node-resolve": "^16.0.0",
+        "@rollup/plugin-typescript": "^12.1.2",
         "@types/fs-extra": "^11.0.4",
         "@types/gulp": "^4.0.17",
         "@types/gulp-babel": "^6.1.33",
@@ -32,16 +41,15 @@
         "@typescript-eslint/eslint-plugin": "~8.22.0",
         "@typescript-eslint/parser": "~8.22.0",
         "archiver": "^7.0.1",
+        "core-js": "3.40.0",
         "eslint": "~9.19.0",
         "fs-extra": "~11.3.0",
         "gulp": "^5.0.0",
-        "gulp-babel": "^8.0.0",
-        "gulp-sourcemaps": "^3.0.0",
-        "gulp-typescript": "^6.0.0-alpha.1",
         "ignore": "^7.0.3",
         "minimist": "^1.2.8",
+        "rolldown": "^1.0.0-beta.3",
+        "rollup": "^4.34.6",
         "spt-server": "https://gitpkg.now.sh/sp-tarkov/server/project/?3.10.5",
-        "ts-transform-import-path-rewrite": "^0.3.0",
         "tsyringe": "4.8.0",
         "typescript": "~5.7.3",
         "winston": "~3.17.0",
