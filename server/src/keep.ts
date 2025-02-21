@@ -1,3 +1,5 @@
+import 'core-js/es/iterator';
+
 import { ApplicationContext } from '@spt/context/ApplicationContext';
 import { PlayerScavGenerator } from '@spt/generators/PlayerScavGenerator';
 import { HealthHelper } from '@spt/helpers/HealthHelper';
@@ -217,7 +219,7 @@ export class KeepEquipment extends LocationLifecycleService {
 		itemId: string,
 		itemMap: Map<string, ItemLookup>,
 		constants: LookupConstants
-	) {
+	): ItemLocation {
 		const lookupResult = itemMap.get(itemId);
 		if (!lookupResult) {
 			this.logger.error(
@@ -271,34 +273,75 @@ export class KeepEquipment extends LocationLifecycleService {
 	public test(sessionId: string) {
 		const profile = this.profileHelper.getPmcProfile(sessionId);
 
-		this.logger.info('Items: ' + profile.Inventory.items.length);
-		console.time('equipment filter');
-		// stash containers in hideout
-		/* const hideoutStashs = new Set(
-			Object.entries(profile.Inventory.hideoutAreaStashes).map(
-				(entry) => entry[1]
-			)
-		);
+		this.logger.info('Inventory items: ' + profile.Inventory.items.length);
 		this.logger.info(
-			'Hideout Stashs (' +
-				hideoutStashs.size +
-				'): ' +
-				hideoutStashs.values()
-		); */
-		const equipmentItems = this.inventoryHelper.getEquipmentItems(
+			'Hideout Stashs: ' +
+				Object.entries(profile.Inventory.hideoutAreaStashes).length
+		);
+
+		console.time('equipment filter');
+		const inventory = this.inventoryHelper.createInventory(
 			profile.Inventory
 		);
+		const equipmentItems =
+			this.inventoryHelper.getEquipmentItems(inventory);
 		console.timeEnd('equipment filter');
 
-		this.logger.info('Equipment items: ' + equipmentItems.length);
-		this.logger.info('------------------------');
+		this.logger.info(
+			'location=Equipment : ' +
+				[...inventory.itemMap.values()].filter(
+					(item) => item.location === ItemLocation.Equipment
+				).length
+		);
+		this.logger.info(
+			'location=Stash : ' +
+				[...inventory.itemMap.values()].filter(
+					(item) => item.location === ItemLocation.Stash
+				).length
+		);
+		this.logger.info(
+			'location=Unknown : ' +
+				inventory.itemMap
+					.values()
+					.filter((item) => item.location === ItemLocation.Unknown)
+					.toArray().length
+		);
+
+		this.logger.info(
+			'------------ Equipment items (' +
+				equipmentItems.length +
+				') ------------'
+		);
 		for (const item of equipmentItems) {
 			this.logger.info(this.itemHelper.getItemName(item._tpl));
 		}
 		this.logger.info('------------------------');
 
-		//this.logger.info(JSON.stringify(items));
+		console.time('backpack');
+		console.time('backpack search');
 		const backpack = profile.Inventory.items.find(
+			(value) => value.slotId === EquipmentSlots.BACKPACK
+		);
+		console.timeEnd('backpack search');
+		console.time('backpack items');
+		const backpackItems = this.inventoryHelper.getAllContainerItems(
+			backpack,
+			inventory
+		);
+		console.timeEnd('backpack items');
+		console.timeEnd('backpack');
+		this.logger.info(
+			'------------ backpack items (' +
+				backpackItems.length +
+				') ------------'
+		);
+		for (const item of backpackItems) {
+			this.logger.info(this.itemHelper.getItemName(item._tpl));
+		}
+		this.logger.info('------------------------');
+
+		//this.logger.info(JSON.stringify(items));
+		/* const backpack = profile.Inventory.items.find(
 			(value) => value.slotId === EquipmentSlots.BACKPACK
 		);
 		this.logger.info(JSON.stringify(backpack));
@@ -309,9 +352,9 @@ export class KeepEquipment extends LocationLifecycleService {
 		);
 		backpackItems.push(backpack);
 		this.logger.info('Container items (' + backpackItems.length + '): ');
-		/* for (const item of backpackItems) {
+		for (const item of backpackItems) {
 			this.logger.info(JSON.stringify(item));
-		} */
+		}
 
 		const [width, height] = this.inventoryHelper.getItemSize(
 			backpack._tpl,
@@ -375,7 +418,7 @@ export class KeepEquipment extends LocationLifecycleService {
 				);
 			}
 		}
-		/* const containerMap = this.inventoryHelper.getContainerMap(
+		const containerMap = this.inventoryHelper.getContainerMap(
 			width,
 			height,
 			backpackItems,

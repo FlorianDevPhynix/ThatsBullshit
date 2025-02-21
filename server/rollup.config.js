@@ -9,17 +9,26 @@ import path from 'node:path';
 /** @type {import('rollup').RollupOptions} */
 export default {
 	input: 'src/mod.ts',
-	output: {
-		dir: 'dist',
-		format: 'commonjs',
-		preserveModules: true,
-	},
+	output: [
+		{
+			dir: 'dist/src',
+			format: 'commonjs',
+			preserveModules: true,
+		},
+		{
+			dir: 'dist2',
+			format: 'commonjs',
+			manualChunks: {
+				corejs: ['core-js'],
+			},
+		},
+	],
 	external: ['../config/config'],
 	plugins: [
 		resolve(),
 		commonjs(),
 		sptPathsPlugin(),
-		deletePlugin(),
+		deletePlugin({ exclude: [/package\.json/, 'dist/config'] }),
 		babel({
 			babelHelpers: 'bundled',
 			extensions: ['.ts', '.js'],
@@ -63,19 +72,26 @@ function sptPathsPlugin() {
 }
 
 /**
+ * @typedef {Object} Options
+ * @property {(string | RegExp)[]?} exclude a string property of SpecialType
+ */
+
+/**
  * Plugin which deletes files on output folders, which were not written by rollup.
+ * @param {Options?} options
  * @returns {import('rollup').Plugin}
  */
-function deletePlugin() {
+function deletePlugin(options = {}) {
+	/**
+	 * Map of output directorys with Sets of files which were overridden by rollup
+	 * @type {Map<string, Set<string>>}
+	 */
+	const outputDirs = new Map();
+
 	return {
 		name: 'rollup-plugin-delete',
 
 		async writeBundle(options, bundle) {
-			/**
-			 * Map of output directorys with Sets of files which were overridden by rollup
-			 * @type {Map<string, Set<string>>}
-			 */
-			const outputDirs = new Map();
 			/**
 			 *
 			 * @param {Map<string, Set<string>} map
@@ -91,76 +107,121 @@ function deletePlugin() {
 
 			// create a full representation of all files and their folders in root
 			for (const [bundlePath, chunk] of Object.entries(bundle)) {
-				const dir = path.resolve(process.cwd(), options.dir ?? '');
-				const folderPath = path.resolve(
-					dir,
-					path.dirname(chunk.fileName)
+				const rootDirAbsolute = path.resolve(
+					process.cwd(),
+					options.dir ?? path.dirname(options.file)
 				);
-				const folderName = path.basename(folderPath);
-				const outputDir = getOrInsert(outputDirs, folderPath);
+				const chunkDirAbsolute = path.resolve(
+					rootDirAbsolute,
+					options.dir
+						? path.dirname(chunk.fileName)
+						: path.basename(chunk.fileName)
+				);
+				// all directory paths should be relative to the project directory
+				const chunkDirRelative = path.relative(
+					process.cwd(),
+					chunkDirAbsolute
+				);
+				//this.info(rootDirAbsolute + '; ' + chunkDirRelative);
+				const chunkDirName = path.basename(chunkDirRelative);
+				const outputDir = getOrInsert(outputDirs, chunkDirRelative);
 				outputDir.add(path.basename(chunk.fileName));
 
 				// also insert all relative parent directory's
-				const parentDirPath = path.dirname(folderPath);
-				const parentDir = getOrInsert(outputDirs, parentDirPath);
-				if (parentDir.has(folderName) === false) {
-					// add current folder to parent
-					parentDir.add(folderName);
-					/* this.info(
+				const parentDirAbsolute = path.dirname(chunkDirAbsolute);
+				if (parentDirAbsolute.startsWith(rootDirAbsolute) === false)
+					continue;
+				const parentDirRelative = path.relative(
+					process.cwd(),
+					parentDirAbsolute
+				);
+				const parentDir = getOrInsert(outputDirs, parentDirRelative);
+				if (parentDir.has(chunkDirName)) continue;
+
+				// add current folder to parent
+				parentDir.add(chunkDirName);
+				/* this.info(
 						'$ Add ' + folderName + ' to parent ' + parentDirPath
 					); */
 
-					// get relative path from current folder to root
-					const parentForRelative = path.dirname(dir);
-					const relative = path.relative(
-						parentForRelative,
-						folderPath
-					);
-					// list of parent folder names, excluding current folder
-					const folders = path.parse(relative).dir.split(path.sep);
-					//this.info(relative + '; ' + JSON.stringify(folders));
-					if (folders && folders.length > 0) {
-						// add all parent folders to their own parents
-						for (let i = folders.length - 2; i >= 0; i--) {
-							if (folders[i].length <= 0) continue;
-							const parentPath = path.join(
-								parentForRelative,
-								...folders.slice(0, i + 1)
-							);
+				// get relative path from current folder to root
+				const relative = path.relative(process.cwd(), chunkDirAbsolute);
+				// list of parent folder names, excluding current folder
+				const folders = path.parse(relative).dir.split(path.sep);
+				//this.info(relative + '; ' + JSON.stringify(folders));
+				if (folders && folders.length > 0) {
+					// add all parent folders to their own parents
+					for (let i = folders.length - 2; i >= 0; i--) {
+						if (folders[i].length <= 0) continue;
+						const parentAbsolute = path.join(
+							process.cwd(),
+							...folders.slice(0, i + 1)
+						);
+						const parentRelative = path.relative(
+							process.cwd(),
+							parentAbsolute
+						);
 
-							const parent = getOrInsert(outputDirs, parentPath);
-							parent.add(folders[i + 1]);
-							/* this.info(
+						const parent = getOrInsert(outputDirs, parentRelative);
+						parent.add(folders[i + 1]);
+						/* this.info(
 								folderName +
 									' # Add ' +
 									folders[i + 1] +
 									' to parent ' +
 									parentPath
 							); */
-						}
 					}
 				}
 			}
-
-			/* for (const [entry, set] of [...outputDirs.entries()]) {
+		},
+		async closeBundle() {
+			for (const [entry, set] of [...outputDirs.entries()]) {
 				this.info(entry + ': ' + [...set.entries()].length);
-			} */
+			}
 
-			for (const [dir, bundles] of outputDirs.entries()) {
+			// delete all files and folders, which were not output by rollup
+			for (const [dirRelative, bundles] of outputDirs.entries()) {
 				/* this.info(
 					JSON.stringify(
 						[...bundles.entries()].map((entry) => entry[0])
 					)
 				); */
-				const folder = await opendir(dir);
-				for await (const entry of folder) {
-					const entryPath = path.join(entry.parentPath, entry.name);
-					if (bundles.has(entry.name) === false) {
-						this.info(
-							'Deleting ' +
-								path.relative(path.dirname(dir), entryPath)
-						);
-						await rm(entryPath, { force: true, recursive: true });
+				const dirAbsolute = path.join(process.cwd(), dirRelative);
+				const dir = await opendir(dirAbsolute);
+				for await (const dirEntry of dir) {
+					const entryAbsolute = path.join(
+						dirEntry.parentPath,
+						dirEntry.name
+					);
+					const entryRelative = path.relative(
+						process.cwd(),
+						entryAbsolute
+					);
+					// path to match against with exclude string or regex
+					const matchPathRelative = path
+						.relative(
+							path.join(
+								process.cwd(),
+								path.parse(entryRelative).dir[0]
+							),
+							entryAbsolute
+						)
+						.replaceAll('\\', '/');
+					if (bundles.has(dirEntry.name) === false) {
+						const matchResult = !options.exclude
+							? false
+							: options.exclude.some(function (entry) {
+									if (typeof entry === 'string') {
+										return entry === matchPathRelative;
+									} else {
+										return entry.test(matchPathRelative);
+									}
+							  });
+						if (!matchResult) {
+							this.info('Deleting ' + entryRelative);
+							//await rm(entryAbsolute, { force: true, recursive: true });
+						}
 					}
 				}
 			}

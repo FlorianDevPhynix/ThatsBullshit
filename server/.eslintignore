@@ -8,3 +8,7 @@
 *.json
 *.txt
 *.exe
+
+rolldown.config.ts
+gulpfile.mjs
+rollup.config.js

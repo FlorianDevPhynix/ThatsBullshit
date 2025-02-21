@@ -3,8 +3,6 @@ import { DependencyContainer } from '@spt/models/external/tsyringe';
 import { KeepEquipment } from './keep';
 import { setupRoutes } from './routes';
 import { KConfig } from './KConfig';
-import { IPostDBLoadMod } from '@spt/models/external/IPostDBLoadMod';
-import { DatabaseServer } from '@spt/servers/DatabaseServer';
 import { InventoryHelper } from './InventoryHelper';
 
 class Mod implements IPreSptLoadMod {
