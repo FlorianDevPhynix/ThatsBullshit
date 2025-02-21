@@ -174,30 +174,7 @@ async function devDeploy() {
 	const packageJson = await loadPackageJson(currentDir);
 
 	// packing the mod in dist folder
-	await npmPack(distPath, packageJson.files);
-
-	// process package.json, only keep important values
-	const packageKeys = new Set([
-		'name',
-		'shortName',
-		'author',
-		'contributors',
-		'license',
-		'version',
-		'sptVersion',
-		'loadBefore',
-		'loadAfter',
-		'incompatibilities',
-		'isBundleMod',
-		'main',
-	]);
-	const processedPackage = structuredClone(packageJson);
-	for (const key of Object.keys(processedPackage)) {
-		if (!packageKeys.has(key)) {
-			delete packageJson[key];
-		}
-	}
-	console.log(packageJson);
+	await npmPack(packageJson, distPath);
 
 	const sptUserModFolder = '../../../user/mods';
 	const deployFolder = path.join(sptUserModFolder, packageJson.shortName);
@@ -334,7 +311,7 @@ async function release() {
 		// Clean up the temporary directory, even if the build fails.
 		if (projectDir) {
 			try {
-				await fs.promises.rm(projectDir, {
+				await fs.rm(projectDir, {
 					force: true,
 					recursive: true,
 				});
@@ -405,20 +382,52 @@ async function loadPackageJson(currentDir) {
 	const packageJsonPath = path.join(currentDir, 'package.json');
 
 	// Read the contents of the package.json file asynchronously as a UTF-8 string.
-	const packageJsonContent = await fs.promises.readFile(
-		packageJsonPath,
-		'utf-8'
-	);
+	const packageJsonContent = await fs.readFile(packageJsonPath, 'utf-8');
 
 	return JSON.parse(packageJsonContent);
 }
 
 /**
- * Copies similar files like npm pack does to the output folder
- * @param {string} outputFolder - The directory to copy the files to.
- * @param {string[]?} packageFiles - The files to copy. If not provided, the files from the package.json files property are used.
+ * Removes unnecessary values from the package.json file, and writes it as a new file into the output folder.
+ * @param {any} packageJson - Contents of the package.json file.
+ * @param {string} outputFolder - The directory to write the package.json file into.
  */
-async function npmPack(outputFolder, packageFiles) {
+async function processPackage(packageJson, outputFolder) {
+	// keys of package.json to keep for SPT
+	const packageKeys = new Set([
+		'name',
+		'shortName',
+		'author',
+		'contributors',
+		'license',
+		'version',
+		'sptVersion',
+		'loadBefore',
+		'loadAfter',
+		'incompatibilities',
+		'isBundleMod',
+		'main',
+	]);
+	// process package.json, only keep important values
+	const outputPackage = {};
+	for (const [key, value] of Object.entries(packageJson)) {
+		if (packageKeys.has(key)) {
+			outputPackage[key] = value;
+		}
+	}
+	console.log(outputPackage);
+	await fs.writeFile(
+		path.join(outputFolder, 'package.json'),
+		JSON.stringify(outputPackage, undefined, '\t')
+	);
+}
+
+/**
+ * Copies similar files like npm pack does to the output folder
+ * @param {any} packageJson - Contents of the package.json file.
+ * @param {string} outputFolder - The directory to copy the files to.
+ */
+async function npmPack(packageJson, outputFolder) {
 	// Get the project directory
 	const currentDir = getCurrentDirectory();
 	// get full names of default files
@@ -433,17 +442,19 @@ async function npmPack(outputFolder, packageFiles) {
 		.filter((entry) => entry.isFile())
 		.map((entry) => entry.name)
 		.filter((entry) => defaultFiles.includes(path.parse(entry).name));
-	// always copy package.json
-	defaultFiles.push('package.json');
 	logger.log('debug', 'Default files: ' + JSON.stringify(defaultFiles));
+
+	/* // always copy package.json
+	defaultFiles.push('package.json'); */
+	await processPackage(packageJson, outputFolder);
 
 	// files to copy
 	const fileset = new Set(defaultFiles);
-	if (!packageFiles) {
+	if (!packageJson) {
 		// Load the package.json file to get project details.
-		const packageJson = await loadPackageJson(currentDir);
-		packageFiles = packageJson.files;
+		packageJson = await loadPackageJson(currentDir);
 	}
+	const packageFiles = packageJson.files;
 	logger.log('debug', 'package.files: ' + JSON.stringify(packageFiles));
 	// add files from package.json files property
 	for (const file of packageFiles) {
@@ -485,10 +496,7 @@ async function loadBuildIgnoreFile(currentDir) {
 
 	try {
 		// Attempt to read the contents of the .buildignore file asynchronously.
-		const fileContent = await fs.promises.readFile(
-			buildIgnorePath,
-			'utf-8'
-		);
+		const fileContent = await fs.readFile(buildIgnorePath, 'utf-8');
 
 		// Return a new ignore instance and add the rules from the .buildignore file (split by newlines).
 		return ignore().add(fileContent.split('\n'));
@@ -539,7 +547,7 @@ function createProjectName(packageJson) {
 async function copyFiles(srcDir, destDir, ignoreHandler) {
 	try {
 		// Read the contents of the source directory to get a list of entries (files and directories).
-		const entries = await fs.promises.readdir(srcDir, {
+		const entries = await fs.readdir(srcDir, {
 			withFileTypes: true,
 		});
 
